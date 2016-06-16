@@ -37,18 +37,27 @@ def make_request(url)
 end
 
 def get_users()
-  res = make_request(URI.parse("https://api.hipchat.com/v2/user"))
-  check_for_rate_limit(res.code)
-  response = JSON.parse(res.body)
   users = []
-  if @options[:user].nil?
-    response['items'].each { |user|
-      users.push({'id' => user['id'], 'name' => user['name']})
-    }
-  else
-    response['items'].each { |user|
-      users.push({'id' => user['id'], 'name' => user['name']}) if @options[:user] == user['name']
-    } 
+  url = URI.parse("https://api.hipchat.com/v2/user?max-results=1000")
+  next_page = true
+  while next_page
+    res = make_request(url)
+    check_for_rate_limit(res.code)
+    response = JSON.parse(res.body)
+    if @options[:user].nil?
+      response['items'].each { |user|
+        users.push({'id' => user['id'], 'name' => user['name']})
+      }
+    else
+      response['items'].each { |user|
+        users.push({'id' => user['id'], 'name' => user['name']}) if @options[:user] == user['name']
+      } 
+    end
+    if response['links']['next'].nil?
+      next_page = false
+    else
+      url = URI.parse(response['links']['next'])
+    end
   end
   if users.nil? || users.empty?
     puts "user you are looking for doesnt exist or their name is spelled wrong."
