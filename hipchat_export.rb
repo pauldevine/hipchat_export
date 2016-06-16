@@ -50,7 +50,7 @@ def get_users()
     puts "getting " + url.to_s unless @options[:verbose].nil?
     res = make_request(url)
     puts "response code " + res.code unless @options[:verbose].nil?
-    check_for_rate_limit(res.code)
+    next if check_for_rate_limit(res.code)
     response = JSON.parse(res.body)
     if @options[:user].nil?
       response['items'].each { |user|
@@ -84,7 +84,7 @@ def get_history(users)
       puts "getting " + url.to_s unless @options[:verbose].nil?
       res = make_request(url)
       puts "response code " + res.code unless @options[:verbose].nil?
-      check_for_rate_limit(res.code)
+      next if check_for_rate_limit(res.code)
       response = JSON.parse(res.body)
       messages = ''
       if response['items'].nil? || response['items'].empty?
@@ -109,6 +109,7 @@ end
 def check_for_rate_limit(code)
   if code.to_i == 429
     take_5(310)
+    return true
   end
 end
 
