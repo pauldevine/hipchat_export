@@ -77,7 +77,7 @@ def get_history(users)
       check_for_rate_limit(res.code)
       response = JSON.parse(res.body)
       messages = ''
-      next if response['items'].nil? || response['items'].nil?
+      next if response['items'].nil? || response['items'].empty?
       puts "Getting message history for #{user['name']}"
       create_file(file_name)
       response['items'].each { |message|
