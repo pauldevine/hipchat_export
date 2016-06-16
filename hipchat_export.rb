@@ -6,11 +6,12 @@ require 'optparse'
 @options = {
   :api_token => nil,
   :user => nil,
+  :verbose => nil,
 }
 
 OptionParser.new do |opts|
 
-  opts.banner = "Usage: ruby hipchat_export.rb -t <api_token>"
+  opts.banner = "Usage: ruby hipchat_export.rb -t <api_token> -u <user_to_search(defaults to all users)> -v"
 
   opts.on('-t', '--api_token API_TOKEN', 'API Token for hipchat API') do |v|
     @options[:api_token] = v
@@ -19,6 +20,11 @@ OptionParser.new do |opts|
   opts.on('-u', '--user USER', 'User to get history for') do |v|
     @options[:user] = v
   end
+
+  opts.on('-v', '--verbose', 'Verbose output to std out') do |v|
+    @options[:verbose] = v
+  end
+
 
 end.parse!
 
@@ -41,7 +47,9 @@ def get_users()
   url = URI.parse("https://api.hipchat.com/v2/user?max-results=1000")
   next_page = true
   while next_page
+    puts "getting " + url.to_s unless @options[:verbose].nil?
     res = make_request(url)
+    puts "response code " + res.code unless @options[:verbose].nil?
     check_for_rate_limit(res.code)
     response = JSON.parse(res.body)
     if @options[:user].nil?
@@ -73,11 +81,16 @@ def get_history(users)
     date = Time.now.to_i
     url = URI.parse("https://api.hipchat.com/v2/user/#{user['id']}/history?date=#{date}&max-results=1000")
     while next_page
+      puts "getting " + url.to_s unless @options[:verbose].nil?
       res = make_request(url)
+      puts "response code " + res.code unless @options[:verbose].nil?
       check_for_rate_limit(res.code)
       response = JSON.parse(res.body)
       messages = ''
-      next if response['items'].nil? || response['items'].empty?
+      if response['items'].nil? || response['items'].empty?
+        puts "No history for #{user['name']}, moving on."
+        break
+      end
       puts "Getting message history for #{user['name']}"
       create_file(file_name)
       response['items'].each { |message|
