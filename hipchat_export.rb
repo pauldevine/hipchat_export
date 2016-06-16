@@ -130,9 +130,9 @@ def take_5(reset)
   puts "\nYou have been rate limited by hipchats wonderful API service. Sleeping for #{sleepy_time} seconds to reset the API limit."
   while sleepy_time != 0
     sleep 1
-    print "#{sleepy_time} seconds remaining..." + "\r"
-    $stdout.flush unless sleepy_time == 1
     sleepy_time -= 1
+    print "#{sleepy_time} seconds remaining..." + "\r"
+    $stdout.flush unless sleepy_time == 0
   end
   puts "\nNaptimes over, lets get cracking.\n\n"
 end
