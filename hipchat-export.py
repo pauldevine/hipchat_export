@@ -11,6 +11,8 @@ import requests
 import sys
 import io
 import os
+from urlparse import urlparse
+from os.path import splitext, basename
 import getopt
 import json
 from datetime import date, datetime
@@ -81,15 +83,19 @@ def vlog(msg):
     if VERBOSE:
         log(msg)
 
-@RateLimited(.33)  # 2 per second at most
+@RateLimited(.40)  # 2 per second at most
 def rated_requests(url, user_token=None):
-    # Set HTTP header to use user token for auth
-    headers = {'Authorization': 'Bearer ' + user_token }
     if user_token:
+        # Set HTTP header to use user token for auth
+        headers = {'Authorization': 'Bearer ' + user_token }
         res = requests.get(url, headers=headers)
     else:
         res = requests.get(url)
-    api_limit = res.headers['X-RateLimit-Remaining']
+
+    if 'X-RateLimit-Remaining' in res.headers:    
+        api_limit = res.headers['X-RateLimit-Remaining']
+    else:
+        api_limit = 'Unlimited'
     vlog('api limit:' + str(api_limit) + ' status: ' + str(res.status_code) + ' url:' + url)
     if res.status_code == 429:
         log('rate limit reached, sleeping for 30 seconds')
@@ -115,6 +121,8 @@ def get_user_list(user_token):
                       'person':person, 
                       'details': person_details}
         user_list[str(person['id'])] = new_person
+        if len(user_list) > 2:
+            break
         
     # Return the dict
     return user_list
@@ -144,8 +152,9 @@ def message_export(user_token, user_id, person):
     # track the total number of requests made, so we can avoid the rate limit
     global TOTAL_REQUESTS
 
-    # Set initial URL with correct user_id
-    url = "http://api.hipchat.com/v2/user/%s/history?date=2001-01-01&reverse=false&max-results=1000" % (user_id)
+    # Set initial URL with correct user_id, current time
+    utc_time = datetime.utcnow().isoformat()
+    url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=500" % (user_id, utc_time)
 
     # main loop to fetch and save messages
     while MORE_RECORDS:
@@ -175,8 +184,10 @@ def message_export(user_token, user_id, person):
                 r2 = rated_requests(item['file']['url'])
 
                 # extract the unique part of the URI to use as a file name
-                fname = item['file']['url'].split('41817/')[1]
-                fpath = os.path.join(FILE_DIR, fname)
+                disassembled = urlparse(item['file']['url'])
+                filename, file_ext = splitext(basename(disassembled.path))
+
+                fpath = os.path.join(FILE_DIR, (filename + file_ext))
 
                 # ensure full dir for the path exists
                 temp_d = os.path.dirname(fpath)
