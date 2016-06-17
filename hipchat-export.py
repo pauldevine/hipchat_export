@@ -81,33 +81,21 @@ def vlog(msg):
     if VERBOSE:
         log(msg)
 
-@RateLimited(1)  # 2 per second at most
-def rated_requests(url, user_token):
+@RateLimited(.33)  # 2 per second at most
+def rated_requests(url, user_token=None):
     # Set HTTP header to use user token for auth
     headers = {'Authorization': 'Bearer ' + user_token }
-    res = requests.get(url, headers=headers)
+    if user_token:
+        res = requests.get(url, headers=headers)
+    else:
+        res = requests.get(url)
     api_limit = res.headers['X-RateLimit-Remaining']
-    vlog()
     vlog('api limit:' + str(api_limit) + ' status: ' + str(res.status_code) + ' url:' + url)
     if res.status_code == 429:
+        log('rate limit reached, sleeping for 30 seconds')
         sleep(30)
         res = rated_requests(url, user_token)
     return res
-
-def take5():
-    global TOTAL_REQUESTS
-    log("\nHipChat API rate limit exceeded! Script will pause for 5 minutes then resume.")
-    log("   Please do not kill the script during this pause -- I was too lazy to make")
-    log("   it any smarter, so you'll have to start all over from the beginning... ;-)")
-    log(' ')
-    for i in range(310, -1, -1):
-        sleep(1)
-        sys.stdout.write("\r%d sec remaining to resume..." % i)
-        sys.stdout.flush()
-    print
-    log("Script operation resuming...")
-    TOTAL_REQUESTS = 0
-
 
 def get_user_list(user_token):
 
@@ -131,18 +119,16 @@ def get_user_list(user_token):
     # Return the dict
     return user_list
 
-
 def display_userlist(user_list):
     print "\nThe following users are active and will be queried for 1-to-1 messages:\n"
     for id, person in user_list.items():
-        log(person['name'] + ' <' + person['email'] + '>,')
+        log(person['name'] + ' <' + person['email'] + '>, id: ' + str(id))
 
-def message_export(user_token, user_id, user_name):
-    # Set HTTP header to use user token for auth
-    headers = {'Authorization': 'Bearer ' + user_token }
+def message_export(user_token, user_id, person):
+    log('processing: ' + person['name'] + ' <' + person['email'] + '>, id: ' + str(user_id))
 
     # create dirs for current user
-    dir_name =  os.path.join(EXPORT_DIR, user_name)
+    dir_name =  os.path.join(EXPORT_DIR, person['name'])
     if not os.path.isdir(dir_name):
         os.makedirs(dir_name)
     dir_name = os.path.join(FILE_DIR, user_id)
@@ -159,33 +145,24 @@ def message_export(user_token, user_id, user_name):
     global TOTAL_REQUESTS
 
     # Set initial URL with correct user_id
-    url = "http://api.hipchat.com/v2/user/%s/history?date=1460563412&reverse=false" % (user_id)
+    url = "http://api.hipchat.com/v2/user/%s/history?date=2001-01-01&reverse=false&max-results=1000" % (user_id)
 
     # main loop to fetch and save messages
     while MORE_RECORDS:
         # fetch the JSON data from the API
         vlog("Fetching URL: %s" % (url))
-        r = requests.get(url, headers=headers)
-        TOTAL_REQUESTS += 1
-
-        # Check the REQ count...
-        if TOTAL_REQUESTS > 95:
-            take5()
+        r = rated_requests(url, user_token)
 
         # TODO - check response code for other errors and report out
         if not r.status_code == requests.codes.ok:
-            if r.status_code == 429:
-                # Hit the rate limit! trigger the 5m pause...
-                take5()
-            else:
-                r.raise_for_status()
+            r.raise_for_status()   
 
         # check JSON for objects and react
         if 'items' not in r.json():
             raise Usage("Could not find messages in API return data... Check your token and try again.")
 
         # write the current JSON dump to file
-        file_name = os.path.join(EXPORT_DIR, user_name, str(LEVEL)+'.txt')
+        file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.txt')
         vlog("  + writing JSON to disk: %s" % (file_name))
         with io.open(file_name, 'w', encoding='utf-8') as f:
             f.write(json.dumps(r.json(), sort_keys=True, indent=4, ensure_ascii=False))
@@ -195,8 +172,7 @@ def message_export(user_token, user_id, user_name):
         for item in r.json()['items']:
             if 'file' in item:
                 vlog("  + fetching file: %s" % (item['file']['url']))
-                r2 = requests.get(item['file']['url'])
-                TOTAL_REQUESTS += 1
+                r2 = rated_requests(item['file']['url'])
 
                 # extract the unique part of the URI to use as a file name
                 fname = item['file']['url'].split('41817/')[1]
@@ -213,10 +189,6 @@ def message_export(user_token, user_id, user_name):
                     for chunk in r2.iter_content(1024):
                         fd.write(chunk)
 
-                # Check the REQ count...
-                if TOTAL_REQUESTS > 95:
-                    take5()
-
         # check for more records to process
         if 'next' in r.json()['links']:
             url = r.json()['links']['next']
@@ -225,7 +197,6 @@ def message_export(user_token, user_id, user_name):
             MORE_RECORDS = False
 
     #end loop
-
 
 class Usage(Exception):
     def __init__(self, msg):
@@ -276,9 +247,9 @@ def main(argv=None):
             sys.exit(0)
 
         # Iterate through user list and export all 1-to-1 messages to disk
-        for user_id, user_name in USER_LIST.items():
-            log("\nExporting 1-to-1 messages for %s (ID: %s)..." % (user_name, user_id))
-            message_export(USER_TOKEN, user_id, user_name)
+        for user_id, person in USER_LIST.items():
+            log("\nExporting 1-to-1 messages for %s (ID: %s)..." % (person['name'], user_id))
+            message_export(USER_TOKEN, user_id, person)
 
     except Usage, err:
         print >> sys.stderr, sys.argv[0].split("/")[-1] + ": " + str(err.msg)
