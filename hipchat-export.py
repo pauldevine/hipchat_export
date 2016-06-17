@@ -15,6 +15,7 @@ import getopt
 import json
 from datetime import date, datetime
 from time import sleep
+import time
 
 help_message = '''
 A simple script to export 1-to-1 messages from HipChat using the v2 API
@@ -54,6 +55,21 @@ EXPORT_DIR = os.path.join(os.getcwd(), 'hipchat_export')
 FILE_DIR = os.path.join(EXPORT_DIR, 'uploads')
 TOTAL_REQUESTS = 0
 
+def RateLimited(maxPerSecond):
+    minInterval = 1.0 / float(maxPerSecond)
+    def decorate(func):
+        lastTimeCalled = [0.0]
+        def rateLimitedFunction(*args,**kargs):
+            elapsed = time.clock() - lastTimeCalled[0]
+            leftToWait = minInterval - elapsed
+            if leftToWait>0:
+                time.sleep(leftToWait)
+            ret = func(*args,**kargs)
+            lastTimeCalled[0] = time.clock()
+            return ret
+        return rateLimitedFunction
+    return decorate
+
 def log(msg):
     if msg[0] == "\n":
         msg = msg[1:]
@@ -64,6 +80,19 @@ def log(msg):
 def vlog(msg):
     if VERBOSE:
         log(msg)
+
+@RateLimited(1)  # 2 per second at most
+def rated_requests(url, user_token):
+    # Set HTTP header to use user token for auth
+    headers = {'Authorization': 'Bearer ' + user_token }
+    res = requests.get(url, headers=headers)
+    api_limit = res.headers['X-RateLimit-Remaining']
+    vlog()
+    vlog('api limit:' + str(api_limit) + ' status: ' + str(res.status_code) + ' url:' + url)
+    if res.status_code == 429:
+        sleep(30)
+        res = rated_requests(url, user_token)
+    return res
 
 def take5():
     global TOTAL_REQUESTS
@@ -81,48 +110,32 @@ def take5():
 
 
 def get_user_list(user_token):
-    # Set HTTP header to use user token for auth
-    headers = {'Authorization': 'Bearer ' + user_token }
 
     # Return value will be a dictionary
     user_list = {}
 
     # Fetch the user list from the API
     url = "http://api.hipchat.com/v2/user"
-    r = requests.get(url, headers=headers)
-    print r.status_code, r.text
-    print 'user count: ' + str(len(r.json()['items']))
+    r = rated_requests(url, user_token)
+    vlog('user count: ' + str(len(r.json()['items'])))
     # Iterate through the users and make a dict to return
     for person in r.json()['items']:
-        person_req = requests.get(person['links']['self'], headers=headers)
+        person_req = rated_requests(person['links']['self'], user_token)
         person_details = person_req.json()
-        try:
-            new_person = {'name': person['name'], 
+        new_person = {'name': person['name'], 
                       'email': person_details['email'], 
                       'person':person, 
                       'details': person_details}
-        except KeyError:
-            new_person = {'name': person['name'], 
-                          'person':person, 
-                          'details': person_details}
         user_list[str(person['id'])] = new_person
-        try:
-            print new_person['name'] + '<' + new_person['email'] + '>,'
-        except KeyError:
-            print new_person['name']
+        
     # Return the dict
     return user_list
 
 
 def display_userlist(user_list):
     print "\nThe following users are active and will be queried for 1-to-1 messages:\n"
-
-    #col_width = max([len(val) for val in user_list.values()]) + 2
-   # print "Name".ljust(col_width), "ID"
-    #print "-" * col_width + "--------"
-
     for id, person in user_list.items():
-        print person['name'], person['email']
+        log(person['name'] + ' <' + person['email'] + '>,')
 
 def message_export(user_token, user_id, user_name):
     # Set HTTP header to use user token for auth
