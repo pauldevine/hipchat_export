@@ -90,11 +90,26 @@ def get_user_list(user_token):
     # Fetch the user list from the API
     url = "http://api.hipchat.com/v2/user"
     r = requests.get(url, headers=headers)
-
+    print r.status_code, r.text
+    print 'user count: ' + str(len(r.json()['items']))
     # Iterate through the users and make a dict to return
     for person in r.json()['items']:
-        user_list[str(person['id'])] = person['name']
-
+        person_req = requests.get(person['links']['self'], headers=headers)
+        person_details = person_req.json()
+        try:
+            new_person = {'name': person['name'], 
+                      'email': person_details['email'], 
+                      'person':person, 
+                      'details': person_details}
+        except KeyError:
+            new_person = {'name': person['name'], 
+                          'person':person, 
+                          'details': person_details}
+        user_list[str(person['id'])] = new_person
+        try:
+            print new_person['name'] + '<' + new_person['email'] + '>,'
+        except KeyError:
+            print new_person['name']
     # Return the dict
     return user_list
 
@@ -102,13 +117,12 @@ def get_user_list(user_token):
 def display_userlist(user_list):
     print "\nThe following users are active and will be queried for 1-to-1 messages:\n"
 
-    col_width = max([len(val) for val in user_list.values()]) + 2
-    print "Name".ljust(col_width), "ID"
-    print "-" * col_width + "--------"
+    #col_width = max([len(val) for val in user_list.values()]) + 2
+   # print "Name".ljust(col_width), "ID"
+    #print "-" * col_width + "--------"
 
-    for u_id, name in user_list.items():
-        print name.ljust(col_width), u_id
-
+    for id, person in user_list.items():
+        print person['name'], person['email']
 
 def message_export(user_token, user_id, user_name):
     # Set HTTP header to use user token for auth
