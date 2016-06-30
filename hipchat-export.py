@@ -18,6 +18,7 @@ import json
 from datetime import date, datetime
 from time import sleep
 import time
+import dateutil.parser
 
 help_message = '''
 A simple script to export 1-to-1 messages from HipChat using the v2 API
@@ -54,7 +55,6 @@ the API, and before it hits 100 will insert a 5 minute pause.
 # Flag for verbosity
 VERBOSE = False
 EXPORT_DIR = os.path.join(os.getcwd(), 'hipchat_export')
-FILE_DIR = os.path.join(EXPORT_DIR, 'uploads')
 TOTAL_REQUESTS = 0
 
 def RateLimited(maxPerSecond):
@@ -83,7 +83,7 @@ def vlog(msg):
     if VERBOSE:
         log(msg)
 
-@RateLimited(.40)  # 2 per second at most
+@RateLimited(.50)  # .5 per second at most
 def rated_requests(url, user_token=None):
     if user_token:
         # Set HTTP header to use user token for auth
@@ -121,8 +121,8 @@ def get_user_list(user_token):
                       'person':person, 
                       'details': person_details}
         user_list[str(person['id'])] = new_person
-        if len(user_list) > 2:
-            break
+        if len(user_list) > 3:
+           break
         
     # Return the dict
     return user_list
@@ -139,9 +139,6 @@ def message_export(user_token, user_id, person):
     dir_name =  os.path.join(EXPORT_DIR, person['name'])
     if not os.path.isdir(dir_name):
         os.makedirs(dir_name)
-    dir_name = os.path.join(FILE_DIR, user_id)
-    if not os.path.isdir(dir_name):
-        os.makedirs(dir_name)
 
     # flag to control pagination
     MORE_RECORDS = True
@@ -154,7 +151,7 @@ def message_export(user_token, user_id, person):
 
     # Set initial URL with correct user_id, current time
     utc_time = datetime.utcnow().isoformat()
-    url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=500" % (user_id, utc_time)
+    url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=1000" % (user_id, utc_time)
 
     # main loop to fetch and save messages
     while MORE_RECORDS:
@@ -171,14 +168,82 @@ def message_export(user_token, user_id, person):
             raise Usage("Could not find messages in API return data... Check your token and try again.")
 
         # write the current JSON dump to file
-        file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.txt')
-        vlog("  + writing JSON to disk: %s" % (file_name))
-        with io.open(file_name, 'w', encoding='utf-8') as f:
+        json_file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.txt')
+        vlog("  + writing JSON to disk: %s" % (json_file_name))
+        with io.open(json_file_name, 'w', encoding='utf-8') as f:
             f.write(json.dumps(r.json(), sort_keys=True, indent=4, ensure_ascii=False))
 
-        # scan for any file links (aws), fetch them and save to disk
+        html_file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.html')
+        vlog("  + writing JSON to disk: %s" % (json_file_name))
+        html_file = io.open(html_file_name, 'w', encoding='utf-8')
+
+        message_css = '''
+        p { margin:0; padding:0}
+            .message {
+                width: 100%;
+                clear: both;
+            }
+
+            .author {
+                color: blue; 
+                margin-left: 20px; 
+                font-weight: bold; 
+                height: auto; 
+                float: left;
+            }
+
+            .text {
+                /*float: left; */
+                margin-left: 90px;
+                margin-right: 90px;
+            }
+
+            .time {
+                vertical-align: top; 
+                margin-right: 20px; 
+                font-weight: bold; 
+                font-size: 0.8em; 
+                float: right;
+            }
+
+            .line {
+                width: 80%;
+                height: 1px;
+                background-color: #CCCCCC;
+                clear: both;
+
+            margin: 0 auto;
+        }
+        '''
+        html_file.write(unicode(message_css))
+
+        message_html = '''
+        <div class="message">
+            <div class="author">
+                <p>%s</p>
+            </div>
+          <div class="time">
+                <p>%s<br />%s</p>
+            </div>
+            <div class="text">
+                <p>%s</p>
+            </div>
+
+            <div class="line">
+
+            </div>
+        </div>
+        '''
+
+        # write html, scan for any file links (aws), fetch them and save to disk
         vlog("  + looking for file uploads in current message batch...")
         for item in r.json()['items']:
+            date_time = dateutil.parser.parse(item['date'])
+            date = date_time.strftime('%x')
+            time = date_time.strftime('%X')
+            label = item['from']['mention_name']
+
+            html_file.write(message_html % (label, time, date, item['message']))
             if 'file' in item:
                 vlog("  + fetching file: %s" % (item['file']['url']))
                 r2 = rated_requests(item['file']['url'])
@@ -186,8 +251,7 @@ def message_export(user_token, user_id, person):
                 # extract the unique part of the URI to use as a file name
                 disassembled = urlparse(item['file']['url'])
                 filename, file_ext = splitext(basename(disassembled.path))
-
-                fpath = os.path.join(FILE_DIR, (filename + file_ext))
+                fpath = os.path.join(EXPORT_DIR, person['name'], (filename + file_ext))
 
                 # ensure full dir for the path exists
                 temp_d = os.path.dirname(fpath)
@@ -220,10 +284,6 @@ def main(argv=None):
     ACTION = "PROCESS"
     USER_TOKEN = None
     USER_LIST = {}
-
-    # create dir for binary files
-    if not os.path.isdir(FILE_DIR):
-        os.makedirs(FILE_DIR)
 
     if argv is None:
         argv = sys.argv
