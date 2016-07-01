@@ -29,8 +29,10 @@ Usage: python hipchat_export.py [options]
 
 Options:
   -v                  Run verbosely
+  -vv                 Run very verbosely
   -h, --help          Show this help file
   -l, --list          List the active users that will be queried
+  -j                  Output json file of messages
   -u, --user_token    Your API user token
                         *** Generate this token online at
                         https://coa.hipchat.com/account/api ***
@@ -55,8 +57,7 @@ the API, and before it hits 100 will insert a 5 minute pause.
 
 # Flag for verbosity
 VERBOSE = False
-EXPORT_DIR = os.path.join(os.getcwd(), 'hipchat_export')
-TOTAL_REQUESTS = 0
+VERY_VERBOSE = False
 reload(sys)  
 sys.setdefaultencoding('utf8')
 
@@ -83,12 +84,16 @@ def log(msg):
     print logit.encode('utf8')
 
 def vlog(msg):
-    if VERBOSE:
+    if VERBOSE or VERY_VERBOSE:
+        log(msg)
+
+def vvlog(msg):
+    if VERY_VERBOSE:
         log(msg)
 
 @RateLimited(.50)  # .5 per second at most
 def rated_requests(url, user_token=None):
-    vlog('requesting: ' + str(url))
+    vvlog('requesting: ' + str(url))
     if user_token:
         # Set HTTP header to use user token for auth
         headers = {'Authorization': 'Bearer ' + user_token }
@@ -107,6 +112,14 @@ def rated_requests(url, user_token=None):
         res = rated_requests(url, user_token)
     return res
 
+def get_current_user(user_token):
+    url = 'http://api.hipchat.com/v2/oauth/token/' + user_token
+    r = rated_requests(url, user_token)
+    owner = r.json()['owner']
+    vlog('current user name: ' + owner['name'] + 
+        ' id: ' + str(owner['id']) + ' mention_name: ' + owner['mention_name'] )
+    return owner
+
 def get_user_list(user_token):
 
     # Return value will be a dictionary
@@ -118,7 +131,7 @@ def get_user_list(user_token):
     while more_people:
         r = rated_requests(url, user_token)
         vlog('user count: ' + str(len(r.json()['items'])))
-        vlog('message: ' + str(r.json()))
+        vvlog('message: ' + str(r.json()))
         # Iterate through the users and make a dict to return
         for person in r.json()['items']:
             person_req = rated_requests(person['links']['self'], user_token)
@@ -128,12 +141,11 @@ def get_user_list(user_token):
                           'person':person, 
                           'details': person_details}
             user_list[str(person['id'])] = new_person
-            # if len(user_list) > 2:
+            #if len(user_list) > 2:
             #    break
         # check for more records to process
         if 'next' in r.json()['links']:
             url = r.json()['links']['next']
-            LEVEL += 1
         else:
             more_people = False
            
@@ -146,22 +158,21 @@ def display_userlist(user_list):
     for id, person in user_list.items():
         log(person['name'] + ' <' + person['email'] + '>, id: ' + str(id))
 
-def message_export(user_token, user_id, person):
+def message_export(user_token, owner, user_id, person, create_json):
     log('processing: ' + person['name'] + ' <' + person['email'] + '>, id: ' + str(user_id))
 
+    export_dir = os.path.join(os.getcwd(), owner['name'])
+
     # create dirs for current user
-    dir_name =  os.path.join(EXPORT_DIR, person['name'])
-    if not os.path.isdir(dir_name):
-        os.makedirs(dir_name)
+    user_dir =  os.path.join(export_dir, person['name'])
+    if not os.path.isdir(user_dir):
+        os.makedirs(user_dir)
 
     # flag to control pagination
-    MORE_RECORDS = True
+    more_records = True
 
     # flag to track iteration through pages
-    LEVEL = 0
-
-    # track the total number of requests made, so we can avoid the rate limit
-    global TOTAL_REQUESTS
+    page = 0
 
     # Set initial URL with correct user_id, current time
     utc_time = datetime.utcnow().isoformat()
@@ -277,7 +288,7 @@ def message_export(user_token, user_id, person):
     img_html = '<div class="image"><img src="./%s"></div>'
     
     # main loop to fetch and save messages
-    while MORE_RECORDS:
+    while more_records:
         # fetch the JSON data from the API
         vlog("Fetching URL: %s" % (url))
         r = rated_requests(url, user_token)
@@ -291,23 +302,26 @@ def message_export(user_token, user_id, person):
             raise Usage("Could not find messages in API return data... Check your token and try again.")
 
         # write the current JSON dump to file
-        json_file_name = os.path.join(EXPORT_DIR, person['name'], person['name'] + '_' + str(LEVEL)+ '.json')
-        vlog("  + writing JSON to disk: %s" % (json_file_name))
-        with io.open(json_file_name, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(r.json(), sort_keys=True, indent=4, ensure_ascii=False))
+        if create_json:
+            json_file_name = os.path.join(user_dir, person['name'] + '_' + str(page)+ '.json')
+            vlog("  + writing JSON to disk: %s" % (json_file_name))
+            with io.open(json_file_name, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(r.json(), sort_keys=True, indent=4, ensure_ascii=False))
+                f.close()
 
-        html_file_name = os.path.join(EXPORT_DIR, person['name'], person['name'] + '_' + str(LEVEL)+'.html')
-        vlog("  + writing JSON to disk: %s" % (json_file_name))
+        # write the initial HTML to setup for messages later
+        html_file_name = os.path.join(user_dir, person['name'] + '_' + str(page)+'.html')
+        vlog("  + writing HTML to disk: %s" % (html_file_name))
         html_file = io.open(html_file_name, 'w', encoding='utf-8')
         html_file.write(unicode(start_html % html_file_name))
         html_file.write(unicode(message_css))
 
         # write html, scan for any file links (aws), fetch them and save to disk
         vlog("  + looking for file uploads in current message batch...")
-        vlog(str(person))
+        vvlog(str(person))
         for item in r.json()['items']:
             date_time = dateutil.parser.parse(item['date'])
-            time = date_time.strftime('%b-%d %I:%M %p')
+            time = date_time.strftime('%b-%d-%Y %I:%M %p')
             author = item['from']['mention_name']
             if person['details']['id']==item['from']['id']:
                 css = "message"
@@ -323,7 +337,7 @@ def message_export(user_token, user_id, person):
                 disassembled = urlparse(item['file']['url'])
                 path = urllib.unquote(disassembled.path).decode('utf8') 
                 filename, file_ext = splitext(basename(path))
-                fpath = os.path.join(EXPORT_DIR, person['name'], (filename + file_ext))
+                fpath = os.path.join(user_dir, (filename + file_ext))
 
                 # ensure full dir for the path exists
                 temp_d = os.path.dirname(fpath)
@@ -335,15 +349,18 @@ def message_export(user_token, user_id, person):
                 with open(fpath, 'w+b') as fd:
                     for chunk in r2.iter_content(1024):
                         fd.write(chunk)
+                    fd.close()
                 html_file.write(unicode(img_html % (filename + file_ext)))
+        
         html_file.write(unicode(end_html))
+        html_file.close()
+        
         # check for more records to process
         if 'next' in r.json()['links']:
             url = r.json()['links']['next']
-            LEVEL += 1
+            page += 1
         else:
-            MORE_RECORDS = False
-    #end loop
+            more_records = False
 
 class Usage(Exception):
     def __init__(self, msg):
@@ -356,6 +373,7 @@ def main(argv=None):
     ACTION = "PROCESS"
     USER_TOKEN = None
     USER_LIST = {}
+    CREATE_JSON = False
 
     if argv is None:
         argv = sys.argv
@@ -374,12 +392,21 @@ def main(argv=None):
                 ACTION = "DISPLAY"
             if option == "-v":
                 VERBOSE = True
+            if option == "-vv":
+                VERY_VERBOSE = True
+            if option == "-j":
+                CREATE_JSON = True
             if option in ("-u", "--user_token"):
                 USER_TOKEN = value
 
         # ensure that the token passed is a valid token length (real check happens later)
         if not USER_TOKEN or not len(USER_TOKEN) == 40:
             raise Usage("You must specify a valid HipChat user token!")
+
+        #get the owner who we're exporting
+        OWNER = get_current_user(USER_TOKEN)
+        log("\nExporting 1-to-1 messages for user: %s (ID: %s) Mention Name: %s" % 
+            (OWNER['name'], str(OWNER['id']), OWNER['mention_name']))
 
         # Get the list of users
         USER_LIST = get_user_list(USER_TOKEN)
@@ -392,7 +419,7 @@ def main(argv=None):
         # Iterate through user list and export all 1-to-1 messages to disk
         for user_id, person in USER_LIST.items():
             log("\nExporting 1-to-1 messages for %s (ID: %s)..." % (person['name'], user_id))
-            message_export(USER_TOKEN, user_id, person)
+            message_export(USER_TOKEN, OWNER, user_id, person, CREATE_JSON)
 
     except Usage, err:
         print >> sys.stderr, sys.argv[0].split("/")[-1] + ": " + str(err.msg)
