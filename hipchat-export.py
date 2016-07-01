@@ -19,6 +19,7 @@ from datetime import date, datetime
 from time import sleep
 import time
 import dateutil.parser
+import urllib
 
 help_message = '''
 A simple script to export 1-to-1 messages from HipChat using the v2 API
@@ -56,6 +57,8 @@ the API, and before it hits 100 will insert a 5 minute pause.
 VERBOSE = False
 EXPORT_DIR = os.path.join(os.getcwd(), 'hipchat_export')
 TOTAL_REQUESTS = 0
+reload(sys)  
+sys.setdefaultencoding('utf8')
 
 def RateLimited(maxPerSecond):
     minInterval = 1.0 / float(maxPerSecond)
@@ -85,6 +88,7 @@ def vlog(msg):
 
 @RateLimited(.50)  # .5 per second at most
 def rated_requests(url, user_token=None):
+    vlog('requesting: ' + str(url))
     if user_token:
         # Set HTTP header to use user token for auth
         headers = {'Authorization': 'Bearer ' + user_token }
@@ -110,19 +114,29 @@ def get_user_list(user_token):
 
     # Fetch the user list from the API
     url = "http://api.hipchat.com/v2/user"
-    r = rated_requests(url, user_token)
-    vlog('user count: ' + str(len(r.json()['items'])))
-    # Iterate through the users and make a dict to return
-    for person in r.json()['items']:
-        person_req = rated_requests(person['links']['self'], user_token)
-        person_details = person_req.json()
-        new_person = {'name': person['name'], 
-                      'email': person_details['email'], 
-                      'person':person, 
-                      'details': person_details}
-        user_list[str(person['id'])] = new_person
-        if len(user_list) > 3:
-           break
+    more_people = True
+    while more_people:
+        r = rated_requests(url, user_token)
+        vlog('user count: ' + str(len(r.json()['items'])))
+        vlog('message: ' + str(r.json()))
+        # Iterate through the users and make a dict to return
+        for person in r.json()['items']:
+            person_req = rated_requests(person['links']['self'], user_token)
+            person_details = person_req.json()
+            new_person = {'name': person['name'], 
+                          'email': person_details['email'], 
+                          'person':person, 
+                          'details': person_details}
+            user_list[str(person['id'])] = new_person
+            # if len(user_list) > 2:
+            #    break
+        # check for more records to process
+        if 'next' in r.json()['links']:
+            url = r.json()['links']['next']
+            LEVEL += 1
+        else:
+            more_people = False
+           
         
     # Return the dict
     return user_list
@@ -153,6 +167,115 @@ def message_export(user_token, user_id, person):
     utc_time = datetime.utcnow().isoformat()
     url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=1000" % (user_id, utc_time)
 
+    start_html = '''
+    <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"
+        "http://www.w3.org/TR/html4/strict.dtd">
+    <html lang="en">
+      <head>
+        <meta http-equiv="content-type" content="text/html; charset=utf-8">
+        <title>%s</title>
+        <link rel="stylesheet" type="text/css" href="style.css">
+        <script type="text/javascript" src="script.js"></script>
+    '''
+    
+    end_html = '''
+            
+      </body>
+    </html>
+    '''
+    message_css = ''' 
+    <style>
+    p { margin:0; padding:0}
+            .message {
+                display: table-cell;
+                padding: 0 10px;
+                line-height: 20px;
+                max-width: 0px;
+            }
+
+            .message-self {
+                background: #e0eaf3;
+                border-top: solid #fff 1px; 
+            }
+
+            .author {
+                color: #4a6785;
+                font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+                vertical-align: top;
+                margin-left: 20px; 
+                font-weight: 500;
+                height: auto; 
+                float: left;
+                line-height: 1.42857142857143;
+            }
+
+            .chat-row {
+                font-size: 14px;
+                line-height: 20px;
+                display: table;
+                table-layout: fixed;
+                width: 100%;
+                padding: 8px 0px;
+                border-top: 1px solid #e9e9e9;
+                box-sizing: border-box;
+                position: relative;
+                overflow: hidden;
+                transition: background-color 150ms ease-in-out;
+            }
+
+            .text {
+                /*float: left; */
+                color: #333;
+                font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+                font-size: 14px;
+                line-height: 20px;
+                margin: 0;
+                padding-left: 20px;
+                display: block;
+            }
+
+            .time {
+                vertical-align: top;
+                color: #999999;
+                text-align: left;
+                font-size: 11px;
+                white-space: nowrap;
+                font-family: Helvetica Neue, Helvetica, Arial, sans-serif; 
+                margin-right: 20px; 
+                font-weight: bold; 
+                font-size: 0.8em; 
+            }
+
+            .separator {
+                color: #707070;
+                padding: 0 5px;
+            }
+
+            .line {
+                width: 80%;
+                height: 1px;
+                background-color: #CCCCCC;
+                clear: both;
+
+            margin: 0 auto;
+        }
+    </style>
+    </head>
+    <body>
+    '''
+
+    message_html = '''
+    <div class="chat-row">
+        <div class="%s">
+          <span class="author">%s</span>
+          <span class="separator">·</span>
+          <span class="time">%s</span>
+          <div class="text">%s</div>
+        </div>
+    </div>
+    '''
+    img_html = '<div class="image"><img src="./%s"></div>'
+    
     # main loop to fetch and save messages
     while MORE_RECORDS:
         # fetch the JSON data from the API
@@ -168,89 +291,38 @@ def message_export(user_token, user_id, person):
             raise Usage("Could not find messages in API return data... Check your token and try again.")
 
         # write the current JSON dump to file
-        json_file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.txt')
+        json_file_name = os.path.join(EXPORT_DIR, person['name'], person['name'] + '_' + str(LEVEL)+ '.json')
         vlog("  + writing JSON to disk: %s" % (json_file_name))
         with io.open(json_file_name, 'w', encoding='utf-8') as f:
             f.write(json.dumps(r.json(), sort_keys=True, indent=4, ensure_ascii=False))
 
-        html_file_name = os.path.join(EXPORT_DIR, person['name'], str(LEVEL)+'.html')
+        html_file_name = os.path.join(EXPORT_DIR, person['name'], person['name'] + '_' + str(LEVEL)+'.html')
         vlog("  + writing JSON to disk: %s" % (json_file_name))
         html_file = io.open(html_file_name, 'w', encoding='utf-8')
-
-        message_css = '''
-        p { margin:0; padding:0}
-            .message {
-                width: 100%;
-                clear: both;
-            }
-
-            .author {
-                color: blue; 
-                margin-left: 20px; 
-                font-weight: bold; 
-                height: auto; 
-                float: left;
-            }
-
-            .text {
-                /*float: left; */
-                margin-left: 90px;
-                margin-right: 90px;
-            }
-
-            .time {
-                vertical-align: top; 
-                margin-right: 20px; 
-                font-weight: bold; 
-                font-size: 0.8em; 
-                float: right;
-            }
-
-            .line {
-                width: 80%;
-                height: 1px;
-                background-color: #CCCCCC;
-                clear: both;
-
-            margin: 0 auto;
-        }
-        '''
+        html_file.write(unicode(start_html % html_file_name))
         html_file.write(unicode(message_css))
-
-        message_html = '''
-        <div class="message">
-            <div class="author">
-                <p>%s</p>
-            </div>
-          <div class="time">
-                <p>%s<br />%s</p>
-            </div>
-            <div class="text">
-                <p>%s</p>
-            </div>
-
-            <div class="line">
-
-            </div>
-        </div>
-        '''
 
         # write html, scan for any file links (aws), fetch them and save to disk
         vlog("  + looking for file uploads in current message batch...")
+        vlog(str(person))
         for item in r.json()['items']:
             date_time = dateutil.parser.parse(item['date'])
-            date = date_time.strftime('%x')
-            time = date_time.strftime('%X')
-            label = item['from']['mention_name']
+            time = date_time.strftime('%b-%d %I:%M %p')
+            author = item['from']['mention_name']
+            if person['details']['id']==item['from']['id']:
+                css = "message"
+            else:
+                css = "message message-self"
 
-            html_file.write(message_html % (label, time, date, item['message']))
+            html_file.write(message_html % (css, author, time, item['message']))
             if 'file' in item:
                 vlog("  + fetching file: %s" % (item['file']['url']))
                 r2 = rated_requests(item['file']['url'])
 
                 # extract the unique part of the URI to use as a file name
                 disassembled = urlparse(item['file']['url'])
-                filename, file_ext = splitext(basename(disassembled.path))
+                path = urllib.unquote(disassembled.path).decode('utf8') 
+                filename, file_ext = splitext(basename(path))
                 fpath = os.path.join(EXPORT_DIR, person['name'], (filename + file_ext))
 
                 # ensure full dir for the path exists
@@ -263,14 +335,14 @@ def message_export(user_token, user_id, person):
                 with open(fpath, 'w+b') as fd:
                     for chunk in r2.iter_content(1024):
                         fd.write(chunk)
-
+                html_file.write(unicode(img_html % (filename + file_ext)))
+        html_file.write(unicode(end_html))
         # check for more records to process
         if 'next' in r.json()['links']:
             url = r.json()['links']['next']
             LEVEL += 1
         else:
             MORE_RECORDS = False
-
     #end loop
 
 class Usage(Exception):
