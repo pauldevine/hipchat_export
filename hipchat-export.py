@@ -29,7 +29,7 @@ Usage: python hipchat_export.py [options]
 
 Options:
   -v                  Run verbosely
-  -vv                 Run very verbosely
+  --very_verbose      Run very verbosely
   -h, --help          Show this help file
   -l, --list          List the active users that will be queried
   -j                  Output json file of messages
@@ -103,9 +103,10 @@ def rated_requests(url, user_token=None):
 
     if 'X-RateLimit-Remaining' in res.headers:    
         api_limit = res.headers['X-RateLimit-Remaining']
+        vlog('api limit:' + str(api_limit) + ' status: ' + str(res.status_code) + ' url:' + url)
     else:
         api_limit = 'Unlimited'
-    vlog('api limit:' + str(api_limit) + ' status: ' + str(res.status_code) + ' url:' + url)
+    
     if res.status_code == 429:
         log('rate limit reached, sleeping for 30 seconds')
         sleep(30)
@@ -159,24 +160,6 @@ def display_userlist(user_list):
         log(person['name'] + ' <' + person['email'] + '>, id: ' + str(id))
 
 def message_export(user_token, owner, user_id, person, create_json):
-    log('processing: ' + person['name'] + ' <' + person['email'] + '>, id: ' + str(user_id))
-
-    export_dir = os.path.join(os.getcwd(), owner['name'])
-
-    # create dirs for current user
-    user_dir =  os.path.join(export_dir, person['name'])
-    if not os.path.isdir(user_dir):
-        os.makedirs(user_dir)
-
-    # flag to control pagination
-    more_records = True
-
-    # flag to track iteration through pages
-    page = 0
-
-    # Set initial URL with correct user_id, current time
-    utc_time = datetime.utcnow().isoformat()
-    url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=1000" % (user_id, utc_time)
 
     start_html = '''
     <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"
@@ -286,13 +269,37 @@ def message_export(user_token, owner, user_id, person, create_json):
     </div>
     '''
     img_html = '<div class="image"><img src="./%s"></div>'
+    link_html = '<div class="link"><a href="./%s">%s</a></div>'
+
+    log('processing: ' + person['name'] + ' <' + person['email'] + '>, id: ' + str(user_id))
+
+    # flag to track iteration through pages
+    page = 0
+
+    # Set initial URL with correct user_id, current time
+    utc_time = datetime.utcnow().isoformat()
+    url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=1000" % (user_id, utc_time)
     
+    # fetch the JSON data from the API
+    vlog("Fetching URL: %s" % (url))
+    r = rated_requests(url, user_token)
+
+    # only enter loop if we have records to process
+    if len(r.json()['items']) > 0:
+        more_records = True
+    else:
+        more_records = False
+
+    if more_records:
+        export_dir = os.path.join(os.getcwd(), owner['name'])
+
+        # create dirs for current user
+        user_dir =  os.path.join(export_dir, person['name'])
+        if not os.path.isdir(user_dir):
+            os.makedirs(user_dir)
+
     # main loop to fetch and save messages
     while more_records:
-        # fetch the JSON data from the API
-        vlog("Fetching URL: %s" % (url))
-        r = rated_requests(url, user_token)
-
         # TODO - check response code for other errors and report out
         if not r.status_code == requests.codes.ok:
             r.raise_for_status()   
@@ -317,7 +324,7 @@ def message_export(user_token, owner, user_id, person, create_json):
         html_file.write(unicode(message_css))
 
         # write html, scan for any file links (aws), fetch them and save to disk
-        vlog("  + looking for file uploads in current message batch...")
+        vlog("  + looking for file uploads in current message batch of %s messages" % str(len(r.json()['items'])))
         vvlog(str(person))
         for item in r.json()['items']:
             date_time = dateutil.parser.parse(item['date'])
@@ -350,14 +357,23 @@ def message_export(user_token, owner, user_id, person, create_json):
                     for chunk in r2.iter_content(1024):
                         fd.write(chunk)
                     fd.close()
-                html_file.write(unicode(img_html % (filename + file_ext)))
+               
+                embed = (filename + file_ext)
+                if file_ext in [".png", ".gif", ".jpg"]:
+                    html_file.write(unicode(img_html % embed))
+                else:
+                    html_file.write(unicode(link_html % (embed, embed)))
         
         html_file.write(unicode(end_html))
         html_file.close()
         
         # check for more records to process
-        if 'next' in r.json()['links']:
-            url = r.json()['links']['next']
+
+        if len(r.json()['items']) == 1000:
+            utc_time = r.json()['items'][-1]['date']
+            url = "http://api.hipchat.com/v2/user/%s/history?date=%s&reverse=false&max-results=1000" % (user_id, utc_time)
+            vlog("Fetching additional page messages URL: %s" % (url))
+            r = rated_requests(url, user_token)
             page += 1
         else:
             more_records = False
@@ -370,6 +386,7 @@ class Usage(Exception):
 def main(argv=None):
     # initialize variables
     global VERBOSE
+    global VERY_VERBOSE
     ACTION = "PROCESS"
     USER_TOKEN = None
     USER_LIST = {}
@@ -379,7 +396,7 @@ def main(argv=None):
         argv = sys.argv
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hlu:v", ["help", "list", "user_token="])
+            opts, args = getopt.getopt(argv[1:], "hlu:vjd", ["help", "list", "debug", "user_token="])
         except getopt.error, msg:
             raise Usage(msg)
 
@@ -392,7 +409,7 @@ def main(argv=None):
                 ACTION = "DISPLAY"
             if option == "-v":
                 VERBOSE = True
-            if option == "-vv":
+            if option in ("-d", "--debug"):
                 VERY_VERBOSE = True
             if option == "-j":
                 CREATE_JSON = True
@@ -417,9 +434,13 @@ def main(argv=None):
             sys.exit(0)
 
         # Iterate through user list and export all 1-to-1 messages to disk
+        count = len(USER_LIST.items())
+        num=1
         for user_id, person in USER_LIST.items():
-            log("\nExporting 1-to-1 messages for %s (ID: %s)..." % (person['name'], user_id))
+            log("\nExporting 1-to-1 messages for %s (ID: %s) %i of %i" % (person['name'], user_id, num, count))
             message_export(USER_TOKEN, OWNER, user_id, person, CREATE_JSON)
+            num += 1
+        log("\nDone with %s (ID: %s)" % (OWNER['name'], str(OWNER['mention_name']))
 
     except Usage, err:
         print >> sys.stderr, sys.argv[0].split("/")[-1] + ": " + str(err.msg)
