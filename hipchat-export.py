@@ -440,7 +440,7 @@ def main(argv=None):
             log("\nExporting 1-to-1 messages for %s (ID: %s) %i of %i" % (person['name'], user_id, num, count))
             message_export(USER_TOKEN, OWNER, user_id, person, CREATE_JSON)
             num += 1
-        log("\nDone with %s (ID: %s)" % (OWNER['name'], str(OWNER['mention_name']))
+        log("\nDone with %s (ID: %s)" % (OWNER['name'], str(OWNER['mention_name'])))
 
     except Usage, err:
         print >> sys.stderr, sys.argv[0].split("/")[-1] + ": " + str(err.msg)
